@@ -329,7 +329,7 @@ impl WeakMap {
     /// `WeakMap.prototype.getOrInsertComputed ( key, callback )`
     ///
     /// If the key exists, returns the existing value. Otherwise computes a new value by calling
-    /// `callback` with the key, inserts it into the WeakMap, and returns it.
+    /// `callback` with the key, inserts it into the `WeakMap`, and returns it.
     ///
     /// More information:
     ///  - [Upsert proposal reference][spec]
@@ -349,9 +349,8 @@ impl WeakMap {
             .as_ref()
             .and_then(JsObject::downcast_ref::<NativeWeakMap>)
             .ok_or_else(|| {
-                JsNativeError::typ().with_message(
-                    "WeakMap.getOrInsertComputed: called with non-object value",
-                )
+                JsNativeError::typ()
+                    .with_message("WeakMap.getOrInsertComputed: called with non-object value")
             })?;
 
         // 3. If CanBeHeldWeakly(key) is false, throw a TypeError exception.
@@ -382,15 +381,18 @@ impl WeakMap {
 
         // 6. Let value be ? Call(callback, undefined, « key »).
         // 7. NOTE: The WeakMap may have been modified during execution of callback.
-        let value = callback_fn.call(&JsValue::undefined(), &[key_value.clone()], context)?;
+        let value = callback_fn.call(
+            &JsValue::undefined(),
+            std::slice::from_ref(&key_value),
+            context,
+        )?;
 
         let mut map = object
             .as_ref()
             .and_then(JsObject::downcast_mut::<NativeWeakMap>)
             .ok_or_else(|| {
-                JsNativeError::typ().with_message(
-                    "WeakMap.getOrInsertComputed: called with non-object value",
-                )
+                JsNativeError::typ()
+                    .with_message("WeakMap.getOrInsertComputed: called with non-object value")
             })?;
 
         // 8-10. Insert or update the entry and return value.
