@@ -178,7 +178,7 @@ pub trait ModuleLoader: Any {
     async fn load_imported_module(
         self: Rc<Self>,
         referrer: Referrer,
-        specifier: JsString,
+        request: super::ModuleRequest,
         context: &RefCell<&mut Context>,
     ) -> JsResult<Module>;
 
@@ -209,9 +209,9 @@ pub(crate) trait DynModuleLoader: Any {
     fn load_imported_module<'a, 'b, 'fut>(
         self: Rc<Self>,
         referrer: Referrer,
-        specifier: JsString,
+        request: super::ModuleRequest,
         context: &'a RefCell<&'b mut Context>,
-    ) -> Fn!(Rc<Self>, Referrer, JsString, &'a RefCell<&'b mut Context> => dyn 'fut + Future<Output = JsResult<Module>>)
+    ) -> Fn!(Rc<Self>, Referrer, super::ModuleRequest, &'a RefCell<&'b mut Context> => dyn 'fut + Future<Output = JsResult<Module>>)
     where
         'a: 'fut,
         'b: 'fut;
@@ -229,14 +229,14 @@ impl<T: ModuleLoader> DynModuleLoader for T {
     fn load_imported_module<'a, 'b, 'fut>(
         self: Rc<Self>,
         referrer: Referrer,
-        specifier: JsString,
+        request: super::ModuleRequest,
         context: &'a RefCell<&'b mut Context>,
-    ) -> Fn!(Rc<Self>, Referrer, JsString, &'a RefCell<&'b mut Context> => dyn 'fut + Future<Output = JsResult<Module>>)
+    ) -> Fn!(Rc<Self>, Referrer, super::ModuleRequest, &'a RefCell<&'b mut Context> => dyn 'fut + Future<Output = JsResult<Module>>)
     where
         'a: 'fut,
         'b: 'fut,
     {
-        from_fn!(T::load_imported_module, self, referrer, specifier, context)
+        from_fn!(T::load_imported_module, self, referrer, request, context)
     }
 
     fn init_import_meta(
@@ -259,7 +259,7 @@ impl ModuleLoader for IdleModuleLoader {
     async fn load_imported_module(
         self: Rc<Self>,
         _referrer: Referrer,
-        _specifier: JsString,
+        _request: super::ModuleRequest,
         _context: &RefCell<&mut Context>,
     ) -> JsResult<Module> {
         Err(JsNativeError::typ()
@@ -317,13 +317,13 @@ impl ModuleLoader for MapModuleLoader {
     fn load_imported_module(
         self: Rc<Self>,
         referrer: Referrer,
-        specifier: JsString,
+        request: super::ModuleRequest,
         context: &RefCell<&mut Context>,
     ) -> impl Future<Output = JsResult<Module>> {
         let result = (|| {
             let path = resolve_module_specifier(
                 None,
-                &specifier,
+                request.specifier(),
                 referrer.path(),
                 &mut context.borrow_mut(),
             )?;
@@ -388,14 +388,14 @@ impl ModuleLoader for SimpleModuleLoader {
     fn load_imported_module(
         self: Rc<Self>,
         referrer: Referrer,
-        specifier: JsString,
+        request: super::ModuleRequest,
         context: &RefCell<&mut Context>,
     ) -> impl Future<Output = JsResult<Module>> {
         let result = (|| {
-            let short_path = specifier.to_std_string_escaped();
+            let short_path = request.specifier().to_std_string_escaped();
             let path = resolve_module_specifier(
                 Some(&self.root),
-                &specifier,
+                request.specifier(),
                 referrer.path(),
                 &mut context.borrow_mut(),
             )?;
@@ -403,16 +403,55 @@ impl ModuleLoader for SimpleModuleLoader {
                 return Ok(module);
             }
 
-            let source = Source::from_filepath(&path).map_err(|err| {
-                JsNativeError::typ()
-                    .with_message(format!("could not open file `{short_path}`"))
-                    .with_cause(JsError::from_opaque(js_string!(err.to_string()).into()))
-            })?;
-            let module = Module::parse(source, None, &mut context.borrow_mut()).map_err(|err| {
-                JsNativeError::syntax()
-                    .with_message(format!("could not parse module `{short_path}`"))
-                    .with_cause(err)
-            })?;
+            // Check for import attribute type
+            let module_type = request.get_attribute("type");
+
+            let module = if let Some(ty) = module_type {
+                // Handle different module types based on the type attribute
+                match ty.to_std_string_escaped().as_str() {
+                    "json" => {
+                        // Load and parse as JSON module
+                        let json_content = std::fs::read_to_string(&path).map_err(|err| {
+                            JsNativeError::typ()
+                                .with_message(format!("could not open file `{short_path}`"))
+                                .with_cause(JsError::from_opaque(
+                                    js_string!(err.to_string()).into(),
+                                ))
+                        })?;
+                        let json_string = js_string!(json_content.as_str());
+                        Module::parse_json(json_string, &mut context.borrow_mut()).map_err(
+                            |err| {
+                                JsNativeError::syntax()
+                                    .with_message(format!(
+                                        "could not parse JSON module `{short_path}`"
+                                    ))
+                                    .with_cause(err)
+                            },
+                        )?
+                    }
+                    other => {
+                        // Unknown module type
+                        return Err(JsNativeError::typ()
+                            .with_message(format!(
+                                "unsupported module type `{other}` for module `{short_path}`"
+                            ))
+                            .into());
+                    }
+                }
+            } else {
+                // No type attribute, load as regular JavaScript module
+                let source = Source::from_filepath(&path).map_err(|err| {
+                    JsNativeError::typ()
+                        .with_message(format!("could not open file `{short_path}`"))
+                        .with_cause(JsError::from_opaque(js_string!(err.to_string()).into()))
+                })?;
+                Module::parse(source, None, &mut context.borrow_mut()).map_err(|err| {
+                    JsNativeError::syntax()
+                        .with_message(format!("could not parse module `{short_path}`"))
+                        .with_cause(err)
+                })?
+            };
+
             self.insert(path, module.clone());
             Ok(module)
         })();

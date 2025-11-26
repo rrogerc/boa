@@ -272,8 +272,12 @@ async fn load_dyn_import(
     cap: PromiseCapability,
     context: &RefCell<&mut Context>,
 ) -> JsResult<()> {
+    // TODO: Extract import attributes from options parameter (second argument to import())
+    // For now, dynamic imports don't support attributes
+    let request = crate::module::ModuleRequest::from_specifier(specifier.clone());
+
     let loader = context.borrow().module_loader();
-    let fut = loader.load_imported_module(referrer.clone(), specifier.clone(), context);
+    let fut = loader.load_imported_module(referrer.clone(), request, context);
     let mut stack = [MaybeUninit::<u8>::uninit(); 16];
     let mut heap = Vec::<MaybeUninit<u8>>::new();
     let completion = fut.init2(&mut stack, &mut heap).await;
@@ -301,8 +305,8 @@ async fn load_dyn_import(
 
     // 1. If result is a normal completion, then
     match referrer {
-        Referrer::Module(module) => {
-            let ModuleKind::SourceText(src) = module.kind() else {
+        Referrer::Module(mod_ref) => {
+            let ModuleKind::SourceText(src) = mod_ref.kind() else {
                 panic!("referrer cannot be a synthetic module");
             };
 
@@ -311,8 +315,9 @@ async fn load_dyn_import(
             //     a. If referrer.[[LoadedModules]] contains a Record whose [[Specifier]] is specifier, then
             //     b. Else,
             //         i. Append the Record { [[Specifier]]: specifier, [[Module]]: result.[[Value]] } to referrer.[[LoadedModules]].
+            let request = crate::module::ModuleRequest::from_specifier(specifier.clone());
             let entry = loaded_modules
-                .entry(specifier)
+                .entry(request)
                 .or_insert_with(|| module.clone());
 
             //         i. Assert: That Record's [[Module]] is result.[[Value]].
@@ -323,7 +328,7 @@ async fn load_dyn_import(
         Referrer::Realm(realm) => {
             let mut loaded_modules = realm.loaded_modules().borrow_mut();
             let entry = loaded_modules
-                .entry(specifier)
+                .entry(specifier.clone())
                 .or_insert_with(|| module.clone());
             debug_assert_eq!(&module, entry);
         }
