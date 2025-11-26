@@ -67,7 +67,6 @@ mod synthetic;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Trace, Finalize)]
 pub struct ModuleRequest {
     specifier: JsString,
-    #[unsafe_ignore_trace]
     attributes: Box<[(JsString, JsString)]>,
 }
 
