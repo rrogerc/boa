@@ -334,7 +334,7 @@ pub struct IndirectExportEntry {
     module_request: Sym,
     import_name: ReExportImportName,
     export_name: Sym,
-    attributes: Box<[super::ImportAttribute]>,
+    attributes: Box<[ImportAttribute]>,
 }
 
 impl IndirectExportEntry {
@@ -344,7 +344,7 @@ impl IndirectExportEntry {
         module_request: Sym,
         import_name: ReExportImportName,
         export_name: Sym,
-        attributes: Box<[super::ImportAttribute]>,
+        attributes: Box<[ImportAttribute]>,
     ) -> Self {
         Self {
             module_request,
@@ -374,7 +374,7 @@ impl IndirectExportEntry {
 
     /// Gets the import attributes.
     #[must_use]
-    pub fn attributes(&self) -> &[super::ImportAttribute] {
+    pub fn attributes(&self) -> &[ImportAttribute] {
         &self.attributes
     }
 }

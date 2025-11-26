@@ -251,6 +251,69 @@ struct ModuleCode {
     star_export_entries: Vec<super::ModuleRequest>,
 }
 
+struct ModuleRequestsVisitor<'a> {
+    interner: &'a Interner,
+    requests: IndexSet<super::ModuleRequest, BuildHasherDefault<FxHasher>>,
+}
+
+impl<'ast> boa_ast::visitor::Visitor<'ast> for ModuleRequestsVisitor<'_> {
+    type BreakTy = std::convert::Infallible;
+
+    fn visit_import_declaration(
+        &mut self,
+        node: &'ast boa_ast::declaration::ImportDeclaration,
+    ) -> std::ops::ControlFlow<Self::BreakTy> {
+        let specifier = node.specifier().sym().to_js_string(self.interner);
+        let attributes = node
+            .attributes()
+            .iter()
+            .map(|attr| {
+                (
+                    attr.key().to_js_string(self.interner),
+                    attr.value().to_js_string(self.interner),
+                )
+            })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
+        self.requests
+            .insert(super::ModuleRequest::new(specifier, attributes));
+        std::ops::ControlFlow::Continue(())
+    }
+
+    fn visit_export_declaration(
+        &mut self,
+        node: &'ast boa_ast::declaration::ExportDeclaration,
+    ) -> std::ops::ControlFlow<Self::BreakTy> {
+        if let boa_ast::declaration::ExportDeclaration::ReExport {
+            specifier,
+            attributes,
+            ..
+        } = node
+        {
+            let spec = specifier.sym().to_js_string(self.interner);
+            let attrs = attributes
+                .iter()
+                .map(|attr| {
+                    (
+                        attr.key().to_js_string(self.interner),
+                        attr.value().to_js_string(self.interner),
+                    )
+                })
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            self.requests.insert(super::ModuleRequest::new(spec, attrs));
+        }
+        std::ops::ControlFlow::Continue(())
+    }
+
+    fn visit_statement_list_item(
+        &mut self,
+        _: &'ast boa_ast::StatementListItem,
+    ) -> std::ops::ControlFlow<Self::BreakTy> {
+        std::ops::ControlFlow::Continue(())
+    }
+}
+
 impl SourceTextModule {
     /// Creates a new `SourceTextModule` from a parsed `ModuleSource`.
     ///
@@ -267,72 +330,6 @@ impl SourceTextModule {
         // Collect module requests with their import attributes
         let requested_modules = {
             use boa_ast::visitor::Visitor;
-            use std::convert::Infallible;
-            use std::ops::ControlFlow;
-
-            #[derive(Debug)]
-            struct ModuleRequestsVisitor<'a> {
-                interner: &'a Interner,
-                requests: IndexSet<super::ModuleRequest, BuildHasherDefault<FxHasher>>,
-            }
-
-            impl<'ast> Visitor<'ast> for ModuleRequestsVisitor<'_> {
-                type BreakTy = Infallible;
-
-                fn visit_import_declaration(
-                    &mut self,
-                    node: &'ast boa_ast::declaration::ImportDeclaration,
-                ) -> ControlFlow<Self::BreakTy> {
-                    let specifier = node.specifier().sym().to_js_string(self.interner);
-                    let attributes = node
-                        .attributes()
-                        .iter()
-                        .map(|attr| {
-                            (
-                                attr.key().to_js_string(self.interner),
-                                attr.value().to_js_string(self.interner),
-                            )
-                        })
-                        .collect::<Vec<_>>()
-                        .into_boxed_slice();
-                    self.requests
-                        .insert(super::ModuleRequest::new(specifier, attributes));
-                    ControlFlow::Continue(())
-                }
-
-                fn visit_export_declaration(
-                    &mut self,
-                    node: &'ast boa_ast::declaration::ExportDeclaration,
-                ) -> ControlFlow<Self::BreakTy> {
-                    if let boa_ast::declaration::ExportDeclaration::ReExport {
-                        specifier,
-                        attributes,
-                        ..
-                    } = node
-                    {
-                        let spec = specifier.sym().to_js_string(self.interner);
-                        let attrs = attributes
-                            .iter()
-                            .map(|attr| {
-                                (
-                                    attr.key().to_js_string(self.interner),
-                                    attr.value().to_js_string(self.interner),
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .into_boxed_slice();
-                        self.requests.insert(super::ModuleRequest::new(spec, attrs));
-                    }
-                    ControlFlow::Continue(())
-                }
-
-                fn visit_statement_list_item(
-                    &mut self,
-                    _: &'ast boa_ast::StatementListItem,
-                ) -> ControlFlow<Self::BreakTy> {
-                    ControlFlow::Continue(())
-                }
-            }
 
             let mut visitor = ModuleRequestsVisitor {
                 interner,
