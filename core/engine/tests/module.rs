@@ -14,10 +14,10 @@ fn test_json_module_from_str() {
         async fn load_imported_module(
             self: Rc<Self>,
             _referrer: Referrer,
-            specifier: JsString,
+            request: boa_engine::module::ModuleRequest,
             context: &RefCell<&mut Context>,
         ) -> JsResult<Module> {
-            assert_eq!(specifier.to_std_string_escaped(), "basic");
+            assert_eq!(request.specifier().to_std_string_escaped(), "basic");
             let src = self.0.clone();
 
             Ok(Module::parse_json(src, &mut context.borrow_mut()).unwrap())

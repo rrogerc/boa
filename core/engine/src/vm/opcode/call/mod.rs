@@ -269,15 +269,46 @@ impl Operation for CallSpread {
 async fn load_dyn_import(
     referrer: Referrer,
     specifier: JsString,
+    options: JsValue,
     cap: PromiseCapability,
     context: &RefCell<&mut Context>,
 ) -> JsResult<()> {
-    // TODO: Extract import attributes from options parameter (second argument to import())
-    // For now, dynamic imports don't support attributes
-    let request = crate::module::ModuleRequest::from_specifier(specifier.clone());
+    let request = if let Some(options_obj) = options.as_object() {
+        let with_key = crate::js_string!("with");
+        let with_val = options_obj.get(with_key, &mut context.borrow_mut())?;
+
+        if !with_val.is_undefined() {
+            if let Some(with_obj) = with_val.as_object() {
+                let keys = with_obj.enumerable_own_property_names(
+                    crate::property::PropertyNameKind::Key,
+                    &mut context.borrow_mut(),
+                )?;
+
+                let mut attributes = Vec::with_capacity(keys.len());
+                for key in keys {
+                    let key_str = key.to_string(&mut context.borrow_mut())?;
+                    let value = with_obj.get(key_str.clone(), &mut context.borrow_mut())?;
+                    let value_str = value.to_string(&mut context.borrow_mut())?;
+                    attributes.push((key_str, value_str));
+                }
+                crate::module::ModuleRequest::new(specifier.clone(), attributes.into_boxed_slice())
+            } else {
+                let err = JsNativeError::typ().with_message("the 'with' option must be an object");
+                let err = JsError::from(err).into_opaque(&mut context.borrow_mut())?;
+                cap.reject()
+                    .call(&JsValue::undefined(), &[err], &mut context.borrow_mut())
+                    .expect("default `reject` function cannot throw");
+                return Ok(());
+            }
+        } else {
+            crate::module::ModuleRequest::from_specifier(specifier.clone())
+        }
+    } else {
+        crate::module::ModuleRequest::from_specifier(specifier.clone())
+    };
 
     let loader = context.borrow().module_loader();
-    let fut = loader.load_imported_module(referrer.clone(), request, context);
+    let fut = loader.load_imported_module(referrer.clone(), request.clone(), context);
     let mut stack = [MaybeUninit::<u8>::uninit(); 16];
     let mut heap = Vec::<MaybeUninit<u8>>::new();
     let completion = fut.init2(&mut stack, &mut heap).await;
@@ -315,7 +346,6 @@ async fn load_dyn_import(
             //     a. If referrer.[[LoadedModules]] contains a Record whose [[Specifier]] is specifier, then
             //     b. Else,
             //         i. Append the Record { [[Specifier]]: specifier, [[Module]]: result.[[Value]] } to referrer.[[LoadedModules]].
-            let request = crate::module::ModuleRequest::from_specifier(specifier.clone());
             let entry = loaded_modules
                 .entry(request)
                 .or_insert_with(|| module.clone());
@@ -328,14 +358,14 @@ async fn load_dyn_import(
         Referrer::Realm(realm) => {
             let mut loaded_modules = realm.loaded_modules().borrow_mut();
             let entry = loaded_modules
-                .entry(specifier.clone())
+                .entry(request.specifier().clone())
                 .or_insert_with(|| module.clone());
             debug_assert_eq!(&module, entry);
         }
         Referrer::Script(script) => {
             let mut loaded_modules = script.loaded_modules().borrow_mut();
             let entry = loaded_modules
-                .entry(specifier)
+                .entry(request.specifier().clone())
                 .or_insert_with(|| module.clone());
             debug_assert_eq!(&module, entry);
         }
@@ -446,7 +476,10 @@ pub(crate) struct ImportCall;
 
 impl ImportCall {
     #[inline(always)]
-    pub(super) fn operation(value: VaryingOperand, context: &mut Context) -> JsResult<()> {
+    pub(super) fn operation(
+        (specifier_op, options_op): (VaryingOperand, VaryingOperand),
+        context: &mut Context,
+    ) -> JsResult<()> {
         // Import Calls
         // Runtime Semantics: Evaluation
         // https://tc39.es/ecma262/#sec-import-call-runtime-semantics-evaluation
@@ -459,7 +492,10 @@ impl ImportCall {
 
         // 3. Let argRef be ? Evaluation of AssignmentExpression.
         // 4. Let specifier be ? GetValue(argRef).
-        let arg = context.vm.get_register(value.into()).clone();
+        let arg = context.vm.get_register(specifier_op.into()).clone();
+
+        // Get options if provided
+        let options = context.vm.get_register(options_op.into()).clone();
 
         // 5. Let promiseCapability be ! NewPromiseCapability(%Promise%).
         let cap = PromiseCapability::new(
@@ -480,7 +516,7 @@ impl ImportCall {
             Ok(specifier) => {
                 let job = NativeAsyncJob::with_realm(
                     async move |context| {
-                        load_dyn_import(referrer, specifier, cap, context).await?;
+                        load_dyn_import(referrer, specifier, options, cap, context).await?;
                         Ok(JsValue::undefined())
                     },
                     context.realm().clone(),
@@ -490,7 +526,7 @@ impl ImportCall {
         }
 
         // 9. Return promiseCapability.[[Promise]].
-        context.vm.set_register(value.into(), promise.into());
+        context.vm.set_register(specifier_op.into(), promise.into());
 
         Ok(())
     }
