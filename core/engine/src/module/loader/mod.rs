@@ -348,7 +348,7 @@ impl ModuleLoader for MapModuleLoader {
 #[derive(Debug)]
 pub struct SimpleModuleLoader {
     root: PathBuf,
-    module_map: GcRefCell<FxHashMap<PathBuf, Module>>,
+    module_map: GcRefCell<FxHashMap<(PathBuf, Box<[(JsString, JsString)]>), Module>>,
 }
 
 impl SimpleModuleLoader {
@@ -371,16 +371,42 @@ impl SimpleModuleLoader {
         })
     }
 
-    /// Inserts a new module onto the module map.
+    /// Inserts a new module onto the module map with empty attributes.
     #[inline]
     pub fn insert(&self, path: PathBuf, module: Module) {
-        self.module_map.borrow_mut().insert(path, module);
+        self.insert_with_attributes(path, Box::default(), module);
     }
 
-    /// Gets a module from its original path.
+    /// Inserts a new module onto the module map with the given attributes.
+    #[inline]
+    pub fn insert_with_attributes(
+        &self,
+        path: PathBuf,
+        attributes: Box<[(JsString, JsString)]>,
+        module: Module,
+    ) {
+        self.module_map
+            .borrow_mut()
+            .insert((path, attributes), module);
+    }
+
+    /// Gets a module from its original path with empty attributes.
     #[inline]
     pub fn get(&self, path: &Path) -> Option<Module> {
-        self.module_map.borrow().get(path).cloned()
+        self.get_with_attributes(path, &[])
+    }
+
+    /// Gets a module from its original path and attributes.
+    #[inline]
+    pub fn get_with_attributes(
+        &self,
+        path: &Path,
+        attributes: &[(JsString, JsString)],
+    ) -> Option<Module> {
+        self.module_map
+            .borrow()
+            .get(&(path.to_path_buf(), Box::from(attributes)))
+            .cloned()
     }
 }
 
@@ -399,12 +425,26 @@ impl ModuleLoader for SimpleModuleLoader {
                 referrer.path(),
                 &mut context.borrow_mut(),
             )?;
-            if let Some(module) = self.get(&path) {
+
+            if let Some(module) = self.get_with_attributes(&path, request.attributes()) {
                 return Ok(module);
             }
 
             // Check for import attribute type
-            let module_type = request.get_attribute("type");
+            let mut module_type = None;
+            let type_key = js_string!("type");
+            for (key, value) in request.attributes() {
+                if key == &type_key {
+                    module_type = Some(value);
+                } else {
+                    return Err(JsNativeError::typ()
+                        .with_message(format!(
+                            "unsupported attribute `{}` for module `{short_path}`",
+                            key.to_std_string_escaped()
+                        ))
+                        .into());
+                }
+            }
 
             let module = if let Some(ty) = module_type {
                 // Handle different module types based on the type attribute
@@ -452,7 +492,11 @@ impl ModuleLoader for SimpleModuleLoader {
                 })?
             };
 
-            self.insert(path, module.clone());
+            self.insert_with_attributes(
+                path,
+                request.attributes().to_vec().into_boxed_slice(),
+                module.clone(),
+            );
             Ok(module)
         })();
 

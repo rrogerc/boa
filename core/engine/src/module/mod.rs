@@ -73,7 +73,9 @@ pub struct ModuleRequest {
 impl ModuleRequest {
     /// Creates a new module request from a specifier and attributes.
     #[must_use]
-    pub fn new(specifier: JsString, attributes: Box<[(JsString, JsString)]>) -> Self {
+    pub fn new(specifier: JsString, mut attributes: Box<[(JsString, JsString)]>) -> Self {
+        // Sort attributes by key to ensure canonical cache keys.
+        attributes.sort_unstable_by(|(k1, _), (k2, _)| k1.cmp(k2));
         Self {
             specifier,
             attributes,
@@ -898,4 +900,27 @@ fn can_throw_exception() {
         promise_result.state().as_rejected(),
         Some(&js_string!("from javascript").into())
     );
+}
+
+#[test]
+fn test_module_request_attribute_sorting() {
+    let request1 = ModuleRequest::new(
+        js_string!("specifier"),
+        Box::new([
+            (js_string!("key2"), js_string!("val2")),
+            (js_string!("key1"), js_string!("val1")),
+        ]),
+    );
+
+    let request2 = ModuleRequest::new(
+        js_string!("specifier"),
+        Box::new([
+            (js_string!("key1"), js_string!("val1")),
+            (js_string!("key2"), js_string!("val2")),
+        ]),
+    );
+
+    assert_eq!(request1, request2);
+    assert_eq!(request1.attributes()[0].0, js_string!("key1"));
+    assert_eq!(request1.attributes()[1].0, js_string!("key2"));
 }

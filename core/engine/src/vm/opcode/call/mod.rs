@@ -266,24 +266,33 @@ impl Operation for CallSpread {
 /// [load]: https://tc39.es/ecma262/#sec-HostLoadImportedModule
 /// [finish]: https://tc39.es/ecma262/#sec-FinishLoadingImportedModule
 /// [continue]: https://tc39.es/ecma262/#sec-ContinueDynamicImport
-async fn load_dyn_import(
-    referrer: Referrer,
+/// Parses the import attributes from the options object.
+fn parse_import_attributes(
     specifier: JsString,
     options: JsValue,
-    cap: PromiseCapability,
-    context: &RefCell<&mut Context>,
-) -> JsResult<()> {
-    let request = if options.is_undefined() {
-        crate::module::ModuleRequest::from_specifier(specifier.clone())
-    } else if let Some(options_obj) = options.as_object() {
-        let with_key = crate::js_string!("with");
-        let with_val = options_obj.get(with_key, &mut context.borrow_mut())?;
+    context: &mut Context,
+) -> JsResult<crate::module::ModuleRequest> {
+    if options.is_undefined() {
+        return Ok(crate::module::ModuleRequest::from_specifier(specifier));
+    }
 
-        if !with_val.is_undefined() {
-            if let Some(with_obj) = with_val.as_object() {
-                let keys = with_obj.enumerable_own_property_names(
+    if let Some(options_obj) = options.as_object() {
+        let with_key = crate::js_string!("with");
+        let with_val = options_obj.get(with_key, context)?;
+
+        let (attributes_val, is_assert) = if !with_val.is_undefined() {
+            (with_val, false)
+        } else {
+            let assert_key = crate::js_string!("assert");
+            let assert_val = options_obj.get(assert_key, context)?;
+            (assert_val, true)
+        };
+
+        if !attributes_val.is_undefined() {
+            if let Some(attributes_obj) = attributes_val.as_object() {
+                let keys = attributes_obj.enumerable_own_property_names(
                     crate::property::PropertyNameKind::Key,
-                    &mut context.borrow_mut(),
+                    context,
                 )?;
 
                 let mut attributes = Vec::with_capacity(keys.len());
@@ -292,39 +301,68 @@ async fn load_dyn_import(
                         continue;
                     }
                     let key_str = key.as_string().expect("key must be string").clone();
-                    let value = with_obj.get(key_str.clone(), &mut context.borrow_mut())?;
+                    let value = attributes_obj.get(key_str.clone(), context)?;
 
                     if !value.is_string() {
-                        let err = JsNativeError::typ().with_message("import attribute value must be a string");
-                        let err = JsError::from(err).into_opaque(&mut context.borrow_mut())?;
-                        cap.reject()
-                            .call(&JsValue::undefined(), &[err], &mut context.borrow_mut())
-                            .expect("default `reject` function cannot throw");
-                        return Ok(());
+                        return Err(JsNativeError::typ()
+                            .with_message("import attribute value must be a string")
+                            .into());
                     }
 
                     let value_str = value.as_string().expect("value must be string").clone();
                     attributes.push((key_str, value_str));
                 }
-                crate::module::ModuleRequest::new(specifier.clone(), attributes.into_boxed_slice())
+                Ok(crate::module::ModuleRequest::new(
+                    specifier,
+                    attributes.into_boxed_slice(),
+                ))
             } else {
-                let err = JsNativeError::typ().with_message("the 'with' option must be an object");
-                let err = JsError::from(err).into_opaque(&mut context.borrow_mut())?;
-                cap.reject()
-                    .call(&JsValue::undefined(), &[err], &mut context.borrow_mut())
-                    .expect("default `reject` function cannot throw");
-                return Ok(());
+                let msg = if is_assert {
+                    "the 'assert' option must be an object"
+                } else {
+                    "the 'with' option must be an object"
+                };
+                Err(JsNativeError::typ().with_message(msg).into())
             }
         } else {
-            crate::module::ModuleRequest::from_specifier(specifier.clone())
+            Ok(crate::module::ModuleRequest::from_specifier(specifier))
         }
     } else {
-        let err = JsNativeError::typ().with_message("import options must be an object or undefined");
-        let err = JsError::from(err).into_opaque(&mut context.borrow_mut())?;
-        cap.reject()
-            .call(&JsValue::undefined(), &[err], &mut context.borrow_mut())
-            .expect("default `reject` function cannot throw");
-        return Ok(());
+        Err(JsNativeError::typ()
+            .with_message("import options must be an object or undefined")
+            .into())
+    }
+}
+
+/// Loads the module of a dynamic import. This combines the operations:
+/// - [`HostLoadImportedModule(referrer, specifierString, empty, promiseCapability).`][load]
+/// - [`FinishLoadingImportedModule ( referrer, specifier, payload, result )`][finish]
+/// - [`ContinueDynamicImport ( promiseCapability, moduleCompletion )`][continue]
+///
+/// [load]: https://tc39.es/ecma262/#sec-HostLoadImportedModule
+/// [finish]: https://tc39.es/ecma262/#sec-FinishLoadingImportedModule
+/// [continue]: https://tc39.es/ecma262/#sec-ContinueDynamicImport
+async fn load_dyn_import(
+    referrer: Referrer,
+    specifier: JsString,
+    options: JsValue,
+    cap: PromiseCapability,
+    context: &RefCell<&mut Context>,
+) -> JsResult<()> {
+    let request = {
+        let mut context = context.borrow_mut();
+        parse_import_attributes(specifier, options, &mut context)
+    };
+
+    let request = match request {
+        Ok(req) => req,
+        Err(err) => {
+            let err = err.into_opaque(&mut context.borrow_mut())?;
+            cap.reject()
+                .call(&JsValue::undefined(), &[err], &mut context.borrow_mut())
+                .expect("default `reject` function cannot throw");
+            return Ok(());
+        }
     };
 
     let loader = context.borrow().module_loader();

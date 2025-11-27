@@ -162,16 +162,19 @@ where
     type Output = Box<[ImportAttribute]>;
 
     fn parse(self, cursor: &mut Cursor<R>, interner: &mut Interner) -> ParseResult<Self::Output> {
-        // Check if the next token is `with`
+        // Check if the next token is `with` or `assert`
         let Some(tok) = cursor.peek(0, interner)? else {
             return Ok(Box::default());
         };
 
-        if !matches!(tok.kind(), TokenKind::Keyword((Keyword::With, _))) {
+        let is_with = matches!(tok.kind(), TokenKind::Keyword((Keyword::With, _)));
+        let is_assert = matches!(tok.kind(), TokenKind::IdentifierName((sym, _)) if interner.resolve_expect(*sym).utf8().is_some_and(|s| s == "assert"));
+
+        if !is_with && !is_assert {
             return Ok(Box::default());
         }
 
-        // Consume the `with` keyword
+        // Consume the `with` or `assert` keyword
         cursor.advance(interner);
 
         // Expect opening brace
