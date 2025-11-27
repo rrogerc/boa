@@ -327,7 +327,6 @@ impl SourceTextModule {
         path: Option<PathBuf>,
     ) -> Self {
         // 3. Let requestedModules be the ModuleRequests of body.
-        // Collect module requests with their import attributes
         let requested_modules = {
             use boa_ast::visitor::Visitor;
 

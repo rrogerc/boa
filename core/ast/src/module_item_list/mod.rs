@@ -258,7 +258,7 @@ impl ModuleItemList {
                 node: &'ast ImportDeclaration,
             ) -> ControlFlow<Self::BreakTy> {
                 let module = node.specifier().sym();
-                let attributes = node.attributes().to_vec().into_boxed_slice();
+                let attributes = Box::from(node.attributes());
 
                 if let Some(default) = node.default() {
                     self.0.push(ImportEntry::new(
@@ -336,7 +336,7 @@ impl ModuleItemList {
                         attributes,
                     } => {
                         let module = specifier.sym();
-                        let attrs = attributes.to_vec().into_boxed_slice();
+                        let attrs = attributes.clone();
 
                         match kind {
                             ReExportKind::Namespaced { name: Some(name) } => {
