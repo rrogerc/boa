@@ -288,9 +288,22 @@ async fn load_dyn_import(
 
                 let mut attributes = Vec::with_capacity(keys.len());
                 for key in keys {
-                    let key_str = key.to_string(&mut context.borrow_mut())?;
+                    if !key.is_string() {
+                        continue;
+                    }
+                    let key_str = key.as_string().expect("key must be string").clone();
                     let value = with_obj.get(key_str.clone(), &mut context.borrow_mut())?;
-                    let value_str = value.to_string(&mut context.borrow_mut())?;
+
+                    if !value.is_string() {
+                        let err = JsNativeError::typ().with_message("import attribute value must be a string");
+                        let err = JsError::from(err).into_opaque(&mut context.borrow_mut())?;
+                        cap.reject()
+                            .call(&JsValue::undefined(), &[err], &mut context.borrow_mut())
+                            .expect("default `reject` function cannot throw");
+                        return Ok(());
+                    }
+
+                    let value_str = value.as_string().expect("value must be string").clone();
                     attributes.push((key_str, value_str));
                 }
                 crate::module::ModuleRequest::new(specifier.clone(), attributes.into_boxed_slice())

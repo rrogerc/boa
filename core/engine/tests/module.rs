@@ -290,3 +290,127 @@ fn test_dynamic_import_invalid_options() {
         state => panic!("Dynamic import should be rejected with TypeError, got {:?}", state),
     }
 }
+
+#[test]
+fn test_dynamic_import_non_string_attribute_value() {
+    struct TestModuleLoader;
+    impl ModuleLoader for TestModuleLoader {
+        async fn load_imported_module(
+            self: Rc<Self>,
+            _referrer: Referrer,
+            _request: boa_engine::module::ModuleRequest,
+            _context: &RefCell<&mut Context>,
+        ) -> JsResult<Module> {
+            panic!("Module loading should not be triggered for invalid attribute values");
+        }
+    }
+
+    let mut context = Context::builder()
+        .module_loader(Rc::new(TestModuleLoader))
+        .build()
+        .unwrap();
+
+    let source = Source::from_bytes(
+        b"
+        export let p = import('basic', { with: { type: 123 } });
+    ",
+    );
+
+    let module = Module::parse(source, None, &mut context).unwrap();
+    let promise = module.load_link_evaluate(&mut context);
+    context.run_jobs().unwrap();
+
+    match promise.state() {
+        PromiseState::Fulfilled(_) => {}
+        _ => panic!("Module evaluation failed"),
+    }
+
+    let p = module
+        .namespace(&mut context)
+        .get(js_string!("p"), &mut context)
+        .unwrap();
+    
+    let p_obj = p.as_promise().unwrap();
+    context.run_jobs().unwrap();
+
+    match p_obj.state() {
+        PromiseState::Rejected(e) => {
+             let error = e.as_object().unwrap();
+             let name = error.get(js_string!("name"), &mut context).unwrap();
+             assert_eq!(name.as_string().unwrap(), js_string!("TypeError"));
+             let message = error.get(js_string!("message"), &mut context).unwrap();
+             assert_eq!(message.as_string().unwrap(), js_string!("import attribute value must be a string"));
+        }
+        state => panic!("Dynamic import should be rejected with TypeError, got {:?}", state),
+    }
+}
+
+#[test]
+fn test_dynamic_import_symbol_key() {
+    struct TestModuleLoader(JsString);
+    impl ModuleLoader for TestModuleLoader {
+        async fn load_imported_module(
+            self: Rc<Self>,
+            _referrer: Referrer,
+            request: boa_engine::module::ModuleRequest,
+            context: &RefCell<&mut Context>,
+        ) -> JsResult<Module> {
+            assert_eq!(request.specifier().to_std_string_escaped(), "basic");
+            
+            // Verify attributes were passed correctly (symbol key should be ignored)
+            assert!(request.get_attribute("type").is_none());
+
+            let src = self.0.clone();
+            Ok(Module::parse_json(src, &mut context.borrow_mut()).unwrap())
+        }
+    }
+
+    let json_content = js_string!(r#"{"ignore":"symbol"}"#);
+    let mut context = Context::builder()
+        .module_loader(Rc::new(TestModuleLoader(json_content.clone())))
+        .build()
+        .unwrap();
+
+    let source = Source::from_bytes(
+        b"
+        let sym = Symbol('type');
+        export let p = import('basic', { with: { [sym]: 'json' } });
+    ",
+    );
+
+    let module = Module::parse(source, None, &mut context).unwrap();
+    let promise = module.load_link_evaluate(&mut context);
+    context.run_jobs().unwrap();
+
+    match promise.state() {
+        PromiseState::Fulfilled(_) => {}
+        _ => panic!("Module evaluation failed"),
+    }
+
+    let p = module
+        .namespace(&mut context)
+        .get(js_string!("p"), &mut context)
+        .unwrap();
+    
+    let p_obj = p.as_promise().unwrap();
+    context.run_jobs().unwrap();
+
+    match p_obj.state() {
+        PromiseState::Fulfilled(module_ns) => {
+             let default_export = module_ns
+                .as_object()
+                .unwrap()
+                .get(js_string!("default"), &mut context)
+                .unwrap();
+            
+             assert_eq!(
+                JsString::from(default_export.to_json(&mut context).unwrap().unwrap().to_string()),
+                json_content
+            );
+        }
+        PromiseState::Rejected(e) => {
+             panic!("Dynamic import failed: {:?}", e.to_string(&mut context).unwrap());
+        }
+        PromiseState::Pending => panic!("Dynamic import is still pending"),
+    }
+}
