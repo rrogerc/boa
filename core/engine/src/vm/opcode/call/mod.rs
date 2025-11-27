@@ -273,7 +273,9 @@ async fn load_dyn_import(
     cap: PromiseCapability,
     context: &RefCell<&mut Context>,
 ) -> JsResult<()> {
-    let request = if let Some(options_obj) = options.as_object() {
+    let request = if options.is_undefined() {
+        crate::module::ModuleRequest::from_specifier(specifier.clone())
+    } else if let Some(options_obj) = options.as_object() {
         let with_key = crate::js_string!("with");
         let with_val = options_obj.get(with_key, &mut context.borrow_mut())?;
 
@@ -304,7 +306,12 @@ async fn load_dyn_import(
             crate::module::ModuleRequest::from_specifier(specifier.clone())
         }
     } else {
-        crate::module::ModuleRequest::from_specifier(specifier.clone())
+        let err = JsNativeError::typ().with_message("import options must be an object or undefined");
+        let err = JsError::from(err).into_opaque(&mut context.borrow_mut())?;
+        cap.reject()
+            .call(&JsValue::undefined(), &[err], &mut context.borrow_mut())
+            .expect("default `reject` function cannot throw");
+        return Ok(());
     };
 
     let loader = context.borrow().module_loader();

@@ -237,3 +237,56 @@ fn test_json_module_reexport_with_attributes() {
         json_string
     );
 }
+
+#[test]
+fn test_dynamic_import_invalid_options() {
+    struct TestModuleLoader;
+    impl ModuleLoader for TestModuleLoader {
+        async fn load_imported_module(
+            self: Rc<Self>,
+            _referrer: Referrer,
+            _request: boa_engine::module::ModuleRequest,
+            _context: &RefCell<&mut Context>,
+        ) -> JsResult<Module> {
+            panic!("Module loading should not be triggered for invalid options");
+        }
+    }
+
+    let mut context = Context::builder()
+        .module_loader(Rc::new(TestModuleLoader))
+        .build()
+        .unwrap();
+
+    let source = Source::from_bytes(
+        b"
+        export let p = import('basic', 'invalid-option-string');
+    ",
+    );
+
+    let module = Module::parse(source, None, &mut context).unwrap();
+    let promise = module.load_link_evaluate(&mut context);
+    context.run_jobs().unwrap();
+
+    match promise.state() {
+        PromiseState::Fulfilled(_) => {}
+        _ => panic!("Module evaluation failed"),
+    }
+
+    // Get the exported promise 'p'
+    let p = module
+        .namespace(&mut context)
+        .get(js_string!("p"), &mut context)
+        .unwrap();
+    
+    let p_obj = p.as_promise().unwrap();
+    context.run_jobs().unwrap();
+
+    match p_obj.state() {
+        PromiseState::Rejected(e) => {
+             let error = e.as_object().unwrap();
+             let name = error.get(js_string!("name"), &mut context).unwrap();
+             assert_eq!(name.as_string().unwrap(), js_string!("TypeError"));
+        }
+        state => panic!("Dynamic import should be rejected with TypeError, got {:?}", state),
+    }
+}
