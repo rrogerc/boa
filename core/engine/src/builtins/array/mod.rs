@@ -1766,18 +1766,19 @@ impl Array {
         let source_len = o.length_of_array_like(context)?;
 
         // 3. Let depthNum be 1
-        let mut depth_num = 1;
-
         // 4. If depth is not undefined, then set depthNum to IntegerOrInfinity(depth)
-        if let Some(depth) = args.first() {
+        let depth = args.get_or_undefined(0);
+        let depth_num = if depth.is_undefined() {
+            1
+        } else {
             // a. Set depthNum to ? ToIntegerOrInfinity(depth).
             // b. If depthNum < 0, set depthNum to 0.
             match depth.to_integer_or_infinity(context)? {
-                IntegerOrInfinity::Integer(value) if value >= 0 => depth_num = value as u64,
-                IntegerOrInfinity::PositiveInfinity => depth_num = u64::MAX,
-                _ => depth_num = 0,
+                IntegerOrInfinity::Integer(value) if value >= 0 => value as u64,
+                IntegerOrInfinity::PositiveInfinity => u64::MAX,
+                _ => 0,
             }
-        }
+        };
 
         // 5. Let A be ArraySpeciesCreate(O, 0)
         let a = Self::array_species_create(&o, 0, context)?;
@@ -2267,14 +2268,24 @@ impl Array {
         args: &[JsValue],
         context: &mut Context,
     ) -> JsResult<JsValue> {
+        let start = args.first();
+        let delete_count = args.get(1);
+        let items = args.get(2..).unwrap_or_default();
+
+        Self::splice_internal(this, start, delete_count, items, context)
+    }
+
+    pub(crate) fn splice_internal(
+        this: &JsValue,
+        start: Option<&JsValue>,
+        delete_count: Option<&JsValue>,
+        items: &[JsValue],
+        context: &mut Context,
+    ) -> JsResult<JsValue> {
         // 1. Let O be ? ToObject(this value).
         let o = this.to_object(context)?;
         // 2. Let len be ? LengthOfArrayLike(O).
         let len = o.length_of_array_like(context)?;
-
-        let start = args.first();
-        let delete_count = args.get(1);
-        let items = args.get(2..).unwrap_or_default();
 
         // 3. Let relativeStart be ? ToIntegerOrInfinity(start).
         // 4. If relativeStart = -∞, let actualStart be 0.

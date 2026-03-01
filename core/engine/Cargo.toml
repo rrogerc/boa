@@ -40,6 +40,7 @@ intl = [
     "icu_normalizer/serde",
     "dep:icu_locale",
     "dep:icu_datetime",
+    "dep:icu_time",
     "dep:icu_plurals",
     "dep:icu_provider",
     "dep:icu_calendar",
@@ -54,6 +55,8 @@ intl = [
     "dep:zerofrom",
     "dep:fixed_decimal",
     "dep:tinystr",
+    "dep:timezone_provider",
+    "timezone_provider/tzif",
 ]
 
 fuzz = ["boa_ast/arbitrary", "boa_interner/arbitrary"]
@@ -68,7 +71,10 @@ trace = ["js"]
 annex-b = ["boa_ast/annex-b", "boa_parser/annex-b"]
 
 # Enable Boa's Temporal proposal implementation
-temporal = ["dep:icu_calendar", "dep:temporal_rs", "dep:iana-time-zone", "dep:timezone_provider", "timezone_provider/tzif"]
+temporal = ["dep:icu_calendar", "dep:temporal_rs", "dep:timezone_provider", "timezone_provider/tzif"]
+
+#Enable access to host system timezone
+system-time-zone = ["dep:iana-time-zone"]
 
 # Enable experimental features, like Stage 3 proposals.
 experimental = []
@@ -144,6 +150,9 @@ icu_locale = { workspace = true, default-features = false, features = [
 icu_datetime = { workspace = true, default-features = false, features = [
     "serde",
 ], optional = true }
+icu_time = { workspace = true, default-features = false, features = [
+    "serde",
+], optional = true }
 icu_calendar = { workspace = true, default-features = false, optional = true }
 icu_collator = { workspace = true, default-features = false, features = [
     "serde",
@@ -179,7 +188,7 @@ futures-concurrency.workspace = true
 # temporal deps
 temporal_rs = { workspace = true, optional = true }
 timezone_provider = { workspace = true, optional = true }
-iana-time-zone = { version = "0.1.64", optional = true }
+iana-time-zone = { version = "0.1.65", optional = true }
 
 [target.'cfg(all(target_family = "wasm", not(any(target_os = "emscripten", target_os = "wasi"))))'.dependencies]
 web-time = { workspace = true, optional = true }

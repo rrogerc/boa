@@ -1,36 +1,32 @@
-use std::borrow::Cow;
+use std::cell::Cell;
 
 use boa_gc::{Finalize, Trace};
 use fixed_decimal::{Decimal, FloatPrecision, SignDisplay};
 use icu_decimal::{
-    DecimalFormatter, FormattedDecimal,
+    DecimalFormatter, DecimalFormatterPreferences, FormattedDecimal,
     options::{DecimalFormatterOptions, GroupingStrategy},
     preferences::NumberingSystem,
-    provider::DecimalSymbolsV1,
+    provider::{DecimalDigitsV1, DecimalSymbolsV1},
 };
 
 mod options;
-use icu_locale::{
-    Locale,
-    extensions::unicode::{Value, key},
-};
-use icu_provider::DataMarkerAttributes;
+use icu_locale::{Locale, extensions::unicode::Value};
+use icu_provider::{DataMarker, DataMarkerAttributes, DynamicDataProvider, buf::BufferMarker};
 use num_bigint::BigInt;
 use num_traits::Num;
 pub(crate) use options::*;
 
 use super::{
     Service,
-    locale::{canonicalize_locale_list, filter_locales, resolve_locale, validate_extension},
+    locale::{canonicalize_locale_list, filter_locales, resolve_locale},
     options::{IntlOptions, coerce_options_to_object},
 };
-use crate::value::JsVariant;
 use crate::{
     Context, JsArgs, JsData, JsNativeError, JsObject, JsResult, JsString, JsSymbol, JsValue,
     NativeFunction,
     builtins::{
         BuiltInConstructor, BuiltInObject, IntrinsicObject, builder::BuiltInBuilder,
-        options::get_option, string::is_trimmable_whitespace,
+        options::get_option,
     },
     context::intrinsics::{Intrinsics, StandardConstructor, StandardConstructors},
     js_string,
@@ -43,6 +39,7 @@ use crate::{
     string::StaticJsStrings,
     value::PreferredType,
 };
+use crate::{js_error, value::JsVariant};
 
 #[cfg(test)]
 mod tests;
@@ -53,7 +50,7 @@ mod tests;
 pub(crate) struct NumberFormat {
     locale: Locale,
     formatter: DecimalFormatter,
-    numbering_system: Option<Value>,
+    numbering_system: NumberingSystem,
     unit_options: UnitFormatOptions,
     digit_options: DigitFormatOptions,
     notation: Notation,
@@ -81,57 +78,10 @@ impl NumberFormat {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(super) struct NumberFormatLocaleOptions {
-    numbering_system: Option<Value>,
-}
-
 impl Service for NumberFormat {
     type LangMarker = DecimalSymbolsV1;
 
-    type LocaleOptions = NumberFormatLocaleOptions;
-
-    fn resolve(
-        locale: &mut Locale,
-        options: &mut Self::LocaleOptions,
-        provider: &crate::context::icu::IntlProvider,
-    ) {
-        let numbering_system = options
-            .numbering_system
-            .take()
-            .filter(|nu| {
-                NumberingSystem::try_from(nu.clone()).is_ok_and(|nu| {
-                    let attr = DataMarkerAttributes::from_str_or_panic(nu.as_str());
-                    validate_extension::<Self::LangMarker>(locale.id.clone(), attr, provider)
-                })
-            })
-            .or_else(|| {
-                locale
-                    .extensions
-                    .unicode
-                    .keywords
-                    .get(&key!("nu"))
-                    .cloned()
-                    .filter(|nu| {
-                        NumberingSystem::try_from(nu.clone()).is_ok_and(|nu| {
-                            let attr = DataMarkerAttributes::from_str_or_panic(nu.as_str());
-                            validate_extension::<Self::LangMarker>(
-                                locale.id.clone(),
-                                attr,
-                                provider,
-                            )
-                        })
-                    })
-            });
-
-        locale.extensions.unicode.clear();
-
-        if let Some(nu) = numbering_system.clone() {
-            locale.extensions.unicode.keywords.set(key!("nu"), nu);
-        }
-
-        options.numbering_system = numbering_system;
-    }
+    type Preferences = DecimalFormatterPreferences;
 }
 
 impl IntrinsicObject for NumberFormat {
@@ -303,8 +253,10 @@ impl NumberFormat {
 
         let mut intl_options = IntlOptions {
             matcher,
-            service_options: NumberFormatLocaleOptions {
-                numbering_system: numbering_system.map(Value::from),
+            preferences: {
+                let mut prefs = DecimalFormatterPreferences::default();
+                prefs.numbering_system = numbering_system;
+                prefs
             },
         };
 
@@ -442,16 +394,53 @@ impl NumberFormat {
         let mut options = DecimalFormatterOptions::default();
         options.grouping_strategy = Some(use_grouping);
 
-        let formatter = DecimalFormatter::try_new_with_buffer_provider(
-            context.intl_provider().erased_provider(),
-            (&locale).into(),
-            options,
-        )
-        .map_err(|err| JsNativeError::typ().with_message(err.to_string()))?;
+        let (formatter, numbering_system) = {
+            struct RequestInspector<'a> {
+                inner: &'a dyn DynamicDataProvider<BufferMarker>,
+                nu: Cell<Option<Box<DataMarkerAttributes>>>,
+            }
+            impl DynamicDataProvider<BufferMarker> for RequestInspector<'_> {
+                fn load_data(
+                    &self,
+                    marker: icu_provider::DataMarkerInfo,
+                    req: icu_provider::DataRequest<'_>,
+                ) -> Result<icu_provider::DataResponse<BufferMarker>, icu_provider::DataError>
+                {
+                    if marker.id == DecimalDigitsV1::INFO.id {
+                        self.nu.set(Some(req.id.marker_attributes.to_owned()));
+                    }
+                    self.inner.load_data(marker, req)
+                }
+            }
+
+            let inspector = RequestInspector {
+                inner: context.intl_provider().erased_provider(),
+                nu: Cell::new(None),
+            };
+            let formatter = DecimalFormatter::try_new_with_buffer_provider(
+                &inspector,
+                (&locale).into(),
+                options,
+            )
+            .map_err(|err| JsNativeError::typ().with_message(err.to_string()))?;
+
+            let nu = (|| {
+                let nu = inspector.nu.into_inner()?;
+                let nu = Value::try_from_str(&nu).ok()?;
+                NumberingSystem::try_from(nu).ok()
+            })()
+            .ok_or_else(|| {
+                js_error!(
+                    TypeError: "could not obtain resolved numbering system from Intl provider"
+                )
+            })?;
+
+            (formatter, nu)
+        };
 
         Ok(NumberFormat {
             locale,
-            numbering_system: intl_options.service_options.numbering_system,
+            numbering_system,
             formatter,
             unit_options,
             digit_options,
@@ -575,13 +564,11 @@ impl NumberFormat {
             js_string!(nf.locale.to_string()),
             Attribute::all(),
         );
-        if let Some(nu) = &nf.numbering_system {
-            options.property(
-                js_string!("numberingSystem"),
-                js_string!(nu.to_string()),
-                Attribute::all(),
-            );
-        }
+        options.property(
+            js_string!("numberingSystem"),
+            js_string!(nf.numbering_system.as_str()),
+            Attribute::all(),
+        );
 
         options.property(
             js_string!("style"),
@@ -825,13 +812,12 @@ fn to_intl_mathematical_value(value: &JsValue, context: &mut Context) -> JsResul
 pub(crate) fn js_string_to_fixed_decimal(string: &JsString) -> Option<Decimal> {
     // 1. Let text be ! StringToCodePoints(str).
     // 2. Let literal be ParseText(text, StringNumericLiteral).
-    let Ok(string) = string.to_std_string() else {
+    let Ok(string) = string.trim().to_std_string() else {
         // 3. If literal is a List of errors, return NaN.
         return None;
     };
     // 4. Return StringNumericValue of literal.
-    let string = string.trim_matches(is_trimmable_whitespace);
-    match string {
+    match string.as_str() {
         "" => return Some(Decimal::from(0)),
         "-Infinity" | "Infinity" | "+Infinity" => return None,
         _ => {}
@@ -856,11 +842,10 @@ pub(crate) fn js_string_to_fixed_decimal(string: &JsString) -> Option<Decimal> {
             return None;
         }
         let int = BigInt::from_str_radix(string, base).ok()?;
-        let int_str = int.to_string();
 
-        Cow::Owned(int_str)
+        int.to_string()
     } else {
-        Cow::Borrowed(string)
+        string
     };
 
     Decimal::try_from_str(&s).ok()

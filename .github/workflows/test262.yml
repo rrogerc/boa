@@ -35,7 +35,7 @@ jobs:
           toolchain: stable
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             target
@@ -65,6 +65,8 @@ jobs:
           comment="$(./target/release/boa_tester compare ../data/test262/refs/heads/main/latest.json ../results/test262/refs/heads/main/latest.json -m)"
           echo "comment<<EOF" >> $GITHUB_OUTPUT
           echo "$comment" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "Tested PR commit: [\`${{ github.event.pull_request.head.sha }}\`](${{ github.event.pull_request.head.repo.html_url }}/commit/${{ github.event.pull_request.head.sha }})" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       - name: Get the PR number

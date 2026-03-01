@@ -9,9 +9,9 @@ pub use hooks::{DefaultHooks, HostHooks};
 #[cfg(feature = "intl")]
 pub use icu::IcuError;
 use intrinsics::Intrinsics;
-#[cfg(feature = "temporal")]
+#[cfg(any(feature = "temporal", feature = "intl"))]
 use temporal_rs::provider::TimeZoneProvider;
-#[cfg(feature = "temporal")]
+#[cfg(any(feature = "temporal", feature = "intl"))]
 use timezone_provider::tzif::CompiledTzdbProvider;
 
 use crate::job::Job;
@@ -107,7 +107,7 @@ pub struct Context {
 
     can_block: bool,
 
-    #[cfg(feature = "temporal")]
+    #[cfg(any(feature = "temporal", feature = "intl"))]
     timezone_provider: Box<dyn TimeZoneProvider>,
 
     /// Intl data provider.
@@ -444,6 +444,14 @@ impl Context {
     #[must_use]
     pub fn intrinsics(&self) -> &Intrinsics {
         self.vm.frame.realm.intrinsics()
+    }
+
+    /// Returns the amount of remaining instructions to be executed
+    #[cfg(feature = "fuzz")]
+    #[inline]
+    #[must_use]
+    pub fn instructions_remaining(&self) -> usize {
+        self.instructions_remaining
     }
 
     /// Returns the currently active realm.
