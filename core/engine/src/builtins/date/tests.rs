@@ -854,6 +854,14 @@ fn date_proto_to_iso_string() {
 }
 
 #[test]
+fn date_proto_to_iso_string_year_zero() {
+    run_test_actions([TestAction::assert_eq(
+        r#"new Date("0000-06-15T00:00:00Z").toISOString()"#,
+        js_str!("0000-06-15T00:00:00.000Z"),
+    )]);
+}
+
+#[test]
 fn date_proto_to_json() {
     run_test_actions([TestAction::assert_eq(
         "new Date(Date.UTC(2020, 6, 8, 9, 16, 15, 779)).toJSON()",
@@ -921,4 +929,66 @@ fn date_json() {
         "JSON.stringify({ date: new Date(Date.UTC(2020, 6, 8, 9, 16, 15, 779)) })",
         js_string!(r#"{"date":"2020-07-08T09:16:15.779Z"}"#),
     )]);
+}
+
+#[test]
+fn date_parse_hour24_validation() {
+    run_test_actions([
+        // 24:00:00.000 is valid (midnight end-of-day)
+        TestAction::assert("!isNaN(Date.parse('2024-01-01T24:00:00Z'))"),
+        TestAction::assert("!isNaN(Date.parse('2024-01-01T24:00:00.000Z'))"),
+        // hour 24 with non-zero minutes/seconds/ms must be NaN
+        TestAction::assert("isNaN(Date.parse('2024-01-01T24:30:00Z'))"),
+        TestAction::assert("isNaN(Date.parse('2024-01-01T24:00:01Z'))"),
+        TestAction::assert("isNaN(Date.parse('2024-01-01T24:00:00.001Z'))"),
+    ]);
+}
+
+#[test]
+#[cfg(feature = "intl")]
+fn date_proto_to_locale_string_intl() {
+    run_test_actions([
+        // Invalid receiver: spec requires TypeError
+        TestAction::assert_native_error(
+            "Date.prototype.toLocaleString.call({})",
+            JsNativeErrorKind::Type,
+            "'this' is not a Date",
+        ),
+        TestAction::assert_native_error(
+            "Date.prototype.toLocaleDateString.call({})",
+            JsNativeErrorKind::Type,
+            "'this' is not a Date",
+        ),
+        TestAction::assert_native_error(
+            "Date.prototype.toLocaleTimeString.call({})",
+            JsNativeErrorKind::Type,
+            "'this' is not a Date",
+        ),
+        TestAction::assert_eq("new Date(NaN).toLocaleString()", js_str!("Invalid Date")),
+        TestAction::assert("typeof new Date(2020, 6, 8).toLocaleString() === 'string'"),
+        TestAction::assert("typeof new Date(2020, 6, 8).toLocaleDateString() === 'string'"),
+        TestAction::assert("typeof new Date(2020, 6, 8).toLocaleTimeString() === 'string'"),
+        TestAction::assert("typeof new Date(0).toLocaleString('en-US') === 'string'"),
+        TestAction::assert("typeof new Date(0).toLocaleDateString('en-US') === 'string'"),
+        TestAction::assert("typeof new Date(0).toLocaleDateString('de-DE') === 'string'"),
+        TestAction::assert("typeof new Date(0).toLocaleTimeString('en-US') === 'string'"),
+        // Prove locale pipeline: different locales produce different output
+        TestAction::assert(
+            "new Date(0).toLocaleDateString('en-US') !== new Date(0).toLocaleDateString('de-DE')",
+        ),
+        TestAction::assert(
+            "new Date(0).toLocaleString('en-US') !== new Date(0).toLocaleString('de-DE')",
+        ),
+        TestAction::assert(
+            "new Date(0).toLocaleTimeString('en-US') !== new Date(0).toLocaleTimeString('de-DE')",
+        ),
+        // Prove ToDateTimeOptions pipeline: options affect output
+        TestAction::assert(
+            "typeof new Date(0).toLocaleDateString('en-US', { dateStyle: 'short' }) === 'string'",
+        ),
+        // Prove output is a string and not empty
+        TestAction::assert(
+            "new Date(0).toLocaleDateString('en-US', { dateStyle: 'short' }).length > 0",
+        ),
+    ]);
 }

@@ -204,7 +204,7 @@ impl Now {
 
         let now: InnerNow<&Context> = InnerNow::new(context);
 
-        let pt = now.plain_time_with_provider(time_zone, context.timezone_provider())?;
+        let pt = now.plain_time_iso_with_provider(time_zone, context.timezone_provider())?;
         create_temporal_time(pt, None, context).map(Into::into)
     }
 }
@@ -213,9 +213,10 @@ impl HostHooks for &Context {}
 
 impl HostClock for &Context {
     fn get_host_epoch_nanoseconds(&self) -> TemporalResult<EpochNanoseconds> {
-        Ok(EpochNanoseconds::from(
-            self.clock().now().nanos_since_epoch() as i128,
-        ))
+        // Temporal needs actual Unix epoch time, not monotonic time
+        let millis = self.clock().system_time_millis();
+        let nanos = i128::from(millis) * 1_000_000;
+        Ok(EpochNanoseconds::from(nanos))
     }
 }
 

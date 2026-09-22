@@ -483,27 +483,26 @@ impl CallValue {
     /// Resolves the [`CallValue`], and return if the value is complete.
     #[cfg_attr(feature = "native-backtrace", track_caller)]
     pub(crate) fn resolve(mut self, context: &mut Context) -> JsResult<bool> {
-        while let Self::Pending {
-            func,
-            object,
-            argument_count,
-            native_source_info,
-        } = self
-        {
-            self = func(
-                &object,
-                argument_count,
-                &mut InternalMethodCallContext::with_native_source_info(
-                    context,
+        loop {
+            match self {
+                CallValue::Ready => return Ok(false),
+                CallValue::Complete => return Ok(true),
+                CallValue::Pending {
+                    func,
+                    object,
+                    argument_count,
                     native_source_info,
-                ),
-            )?;
-        }
-
-        match self {
-            Self::Ready => Ok(false),
-            Self::Complete => Ok(true),
-            Self::Pending { .. } => unreachable!(),
+                } => {
+                    self = func(
+                        &object,
+                        argument_count,
+                        &mut InternalMethodCallContext::with_native_source_info(
+                            context,
+                            native_source_info,
+                        ),
+                    )?;
+                }
+            }
         }
     }
 }
@@ -1208,12 +1207,19 @@ fn non_existent_call(
 }
 
 fn non_existent_construct(
-    _obj: &JsObject,
+    obj: &JsObject,
     _argument_count: usize,
     context: &mut InternalMethodCallContext<'_>,
 ) -> JsResult<CallValue> {
+    // A callable object reaching this point is a function without a [[Construct]]
+    // slot (e.g. an arrow function or method), so report it as a function.
+    let type_of = if obj.is_callable() {
+        "function"
+    } else {
+        "object"
+    };
     Err(JsNativeError::typ()
-        .with_message("not a constructor")
+        .with_message(format!("{type_of} is not a constructor"))
         .with_realm(context.realm().clone())
         .into())
 }
